@@ -28,21 +28,30 @@ async def resolve_movie_stream(target_url: str):
         await page.route("**/*", route_intercept)
         
         try:
-            # 1. Open the target webpage
+            # 1. Open the HubCloud initial landing page
+            print(f"Navigating to initial landing page: {target_url}")
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             
-            # 2. Check if it's a HubCloud landing page requiring generation
+            # 2. Check if it's HubCloud and click the dynamic download link generator button
             if "hubcloud" in target_url.lower():
-                print("Processing HubCloud landing layer...")
+                print("Clicking generation link wrapper...")
                 generator_button = page.locator("text=Generate Direct Download Link").first
-                if await generator_button.is_visible():
+                await generator_button.wait_for(state="visible", timeout=15000)
+                
+                # Because clicking opens a new page/redirect tab, we handle and track the navigation hook
+                async with context.expect_page(timeout=15000) as page_info:
                     await generator_button.click()
-                    # Wait for the intermediate mediator page (e.g., gamerxyt.com) to load its elements
-                    await page.wait_for_load_state("networkidle")
+                
+                # Switch active page context tracking focus to the newly opened tab (gamerxyt.com)
+                page = await page_info.value
+                print("Switched focus to dynamic redirect container page...")
             
-            # 3. Scrape all available server download links on the current page view
-            # This selector matches buttons containing download server patterns
-            server_elements = await page.query_selector_all("a[href*='drive'], a[href*='file'], a:has-text('Download'), a:has-text('Server')")
+            # 3. Wait for the new page layout to populate its DOM tree structure completely
+            await page.wait_for_load_state("networkidle", timeout=20000)
+            await page.wait_for_timeout(3000) # Safety buffer for slow-rendering dynamic scripts
+            
+            # 4. Scrape all the true server element items (FSL, FSLv2, 10Gbps, Buzz, etc.)
+            server_elements = await page.query_selector_all("a")
             
             discovered_servers = []
             seen_urls = set()
@@ -51,15 +60,21 @@ async def resolve_movie_stream(target_url: str):
                 text = await element.inner_text()
                 href = await element.get_attribute("href")
                 
-                # Clean up and filter out empty text, telegram links, or duplicates
-                text_clean = text.strip().replace("\n", " ")
-                if href and text_clean and "telegram" not in href.lower() and "android app" not in href.lower():
-                    if href not in seen_urls:
-                        seen_urls.add(href)
-                        discovered_servers.append({
-                            "server_name": text_clean,
-                            "target_link": href
-                        })
+                if text and href:
+                    text_clean = text.strip().replace("\n", " ")
+                    href_lower = href.lower()
+                    
+                    # Filter out noise like utility layouts, admin views, or video tutorials
+                    is_valid_server = any(keyword in text_clean.lower() for keyword in ["server", "download", "watch online"])
+                    is_noise = any(keyword in href_lower for keyword in ["tinyurl", "telegram", "tutorial", "how-to", "/admin"])
+                    
+                    if is_valid_server and not is_noise:
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            discovered_servers.append({
+                                "server_name": text_clean,
+                                "target_link": href
+                            })
             
             await browser.close()
             
@@ -70,7 +85,7 @@ async def resolve_movie_stream(target_url: str):
                     "servers": discovered_servers
                 }
             else:
-                raise HTTPException(status_code=404, detail="No active server download links could be parsed from the page template.")
+                raise HTTPException(status_code=404, detail="Could not extract server links from the redirect target page layout.")
                 
         except Exception as e:
             await browser.close()
