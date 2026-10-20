@@ -86,5 +86,11 @@ async def resolve_movie_stream(target_url: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import subprocess
+
+    # This line automatically forces Render to install the background cloud browser on startup
+    print("Installing cloud browser dependencies...")
+    subprocess.run(["playwright", "install", "chromium"])
+    
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
